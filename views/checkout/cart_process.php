@@ -15,11 +15,11 @@ ob_start();
   <!-- Proceso de checkout de una sola página con tabs/steps -->
   <div class="checkout-wrapper">
     <div class="checkout-steps">
-      <div class="step active" data-step="1">
+      <div class="step completed" data-step="1">
         <span class="step-number">1</span>
         <span class="step-title">Carrito</span>
       </div>
-      <div class="step" data-step="2">
+      <div class="step active" data-step="2">
         <span class="step-number">2</span>
         <span class="step-title">Dirección</span>
       </div>
@@ -113,6 +113,23 @@ ob_start();
       <!-- PASO 2: DIRECCIÓN -->
       <div class="checkout-step-content" id="step-2" style="display: none;">
         <h2>Información de envío</h2>
+        
+        <!-- Resumen del carrito -->
+        <div class="cart-summary mb-4">
+          <h4>Resumen de tu pedido</h4>
+          <div class="card">
+            <div class="card-body">
+              <div id="cart-summary-step2">
+                <!-- Aquí se mostrarán los productos del carrito -->
+              </div>
+              <hr>
+              <div class="d-flex justify-content-between font-weight-bold">
+                <span>Total:</span>
+                <span id="cart-summary-total-step2">$0.00</span>
+              </div>
+            </div>
+          </div>
+        </div>
         <div class="form-row">
           <div class="form-group col-md-6">
             <label for="nombre">Nombre completo</label>
@@ -512,13 +529,23 @@ document.addEventListener('DOMContentLoaded', function() {
   const paymentDetails = document.querySelectorAll('.payment-details');
   const form = document.getElementById('checkout-form');
   const cartMessageContainer = document.getElementById('cart-message-container');
-  let currentStep = 1;
+  // Iniciar directamente en el paso de dirección (paso 2)
+  let currentStep = 2;
   
-  // Inicializar
+  // Inicializar - mostrar el paso 2 directamente
   updateSteps();
+  
+  // Ocultar explícitamente el paso 1 (carrito)
+  document.getElementById('step-1').style.display = 'none';
+  
+  // Mostrar explícitamente el paso 2 (dirección)
+  document.getElementById('step-2').style.display = 'block';
 
   // Sincronizar carrito al cargar la página
   sincronizarCarritoCheckout();
+  
+  // Actualizar el resumen con los datos del carrito para que se muestre en el paso 2
+  setTimeout(updateSummary, 500);
 
   // Event listeners para botones siguiente
   nextButtons.forEach(button => {
@@ -649,6 +676,48 @@ document.addEventListener('DOMContentLoaded', function() {
 
   // Actualizar resumen
   function updateSummary() {
+    // Siempre actualizar el resumen del carrito para el paso 2 y para el paso 4
+    // Obtener los productos del carrito y mostrarlos en el resumen
+    fetch('/artesanoDigital/controllers/checkout.php', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'X-Requested-With': 'XMLHttpRequest'
+      },
+      body: 'accion=obtener_carrito'
+    })
+    .then(res => res.json())
+    .then(data => {
+      if (data.exitoso) {
+        // Actualizar el resumen en el paso 2
+        const summaryItemsStep2 = document.querySelector('#cart-summary-step2');
+        if (summaryItemsStep2) {
+          let html = '';
+          let total = 0;
+          
+          data.carrito.forEach(item => {
+            const subtotal = parseFloat(item.precio) * parseInt(item.cantidad);
+            total += subtotal;
+            html += `<div class="summary-item">
+              <span class="product-name">${item.nombre} x ${item.cantidad}</span>
+              <span class="product-price">$${subtotal.toFixed(2)}</span>
+            </div>`;
+          });
+          
+          summaryItemsStep2.innerHTML = html;
+          
+          const totalElement = document.querySelector('#cart-summary-total-step2');
+          if (totalElement) {
+            totalElement.textContent = '$' + total.toFixed(2);
+          }
+        }
+      }
+    })
+    .catch(error => {
+      console.error('Error al actualizar resumen:', error);
+    });
+    
+    // Si estamos en el paso de confirmación, actualizar todos los datos del resumen
     if (currentStep === 4) {
       document.getElementById('summary-nombre').textContent = document.getElementById('nombre').value;
       document.getElementById('summary-telefono').textContent = document.getElementById('telefono').value;

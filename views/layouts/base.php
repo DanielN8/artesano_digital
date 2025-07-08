@@ -393,6 +393,7 @@ if (session_status() === PHP_SESSION_NONE) {
     </footer>
 
     <!-- JS principal -->
+    <script src="/artesanoDigital/assets/js/carrito.js"></script>
     <script src="/artesanoDigital/assets/js/main.js"></script>
     <script src="/artesanoDigital/assets/js/notificaciones.js"></script>
     <?= $scriptsAdicionales ?? '' ?>

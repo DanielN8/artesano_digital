@@ -11,6 +11,7 @@ use Models\Pedido;
 use Patrones\EstrategiaMetodoPago;
 use Patrones\EstrategiaTarjeta;
 use Patrones\EstrategiaYappy;
+use Patrones\EstrategiaTransferencia;
 use Utils\GestorAutenticacion;
 use Exception;
 
@@ -129,9 +130,40 @@ class ControladorCheckout
                 header('Location: /artesanoDigital/checkout/pago');
                 exit;
             }
-            // Simular creación de pedido y limpiar carrito
+            // Crear el pedido en la base de datos
+            $direccion = $_SESSION['checkout_direccion'];
+            $direccionFormateada = json_encode($direccion); // Convertir array a JSON para almacenar
+            
+            $productos = $this->modeloCarrito->obtenerProductos($usuario['id_usuario']);
+            
+            $datosPedido = [
+                'id_usuario' => $usuario['id_usuario'],
+                'metodo_pago' => $metodo,
+                'total' => $total,
+                'direccion_envio' => $direccionFormateada,
+                'productos' => $productos
+            ];
+            
+            $resultadoPedido = $this->modeloPedido->crear($datosPedido);
+            
+            if (!$resultadoPedido['exitoso']) {
+                $_SESSION['checkout_error'] = 'Error al crear el pedido: ' . $resultadoPedido['mensaje'];
+                header('Location: /artesanoDigital/checkout/pago');
+                exit;
+            }
+            
+            // Vaciar el carrito después de crear el pedido
+            $this->modeloCarrito->vaciarCarrito($usuario['id_usuario']);
             unset($_SESSION['carrito']);
             unset($_SESSION['checkout_direccion'], $_SESSION['checkout_metodo_pago'], $_SESSION['checkout_datos_pago']);
+            
+            // Guardar información del pedido para mostrarla en la vista de completado
+            $_SESSION['pedido_completado'] = [
+                'id_pedido' => $resultadoPedido['id_pedido'],
+                'transaccion_id' => $resultadoPago['transaccion_id'] ?? null,
+                'total' => $total
+            ];
+            
             $this->cargarVista('checkout/completado');
             exit;
         }
@@ -141,9 +173,13 @@ class ControladorCheckout
     private function obtenerEstrategiaPago(string $metodo): EstrategiaMetodoPago {
         switch ($metodo) {
             case 'tarjeta':
+            case 'tarjeta_credito':
+            case 'tarjeta_debito':
                 return new EstrategiaTarjeta();
             case 'yappy':
                 return new EstrategiaYappy();
+            case 'transferencia':
+                return new EstrategiaTransferencia();
             default:
                 return new EstrategiaTarjeta();
         }
@@ -151,7 +187,24 @@ class ControladorCheckout
 
     private function cargarVista(string $vista, array $datos = []) {
         extract($datos);
-        include __DIR__ . '/../views/' . $vista . '.php';
+        $rutaVista = __DIR__ . '/../views/' . $vista . '.php';
+        
+        // Verificar si la vista existe
+        if (file_exists($rutaVista)) {
+            include $rutaVista;
+        } else {
+            // Si es una vista de checkout que no existe, usar cart_process.php
+            if (strpos($vista, 'checkout/') === 0 && $vista !== 'checkout/cart_process') {
+                include __DIR__ . '/../views/checkout/cart_process.php';
+            } else {
+                // Si no es una vista de checkout o es la vista principal de checkout que tampoco existe
+                echo "<div style='text-align: center; margin-top: 50px;'>";
+                echo "<h1>Error 404</h1>";
+                echo "<p>La página solicitada no existe: {$vista}.php</p>";
+                echo "<p><a href='/artesanoDigital'>Volver al inicio</a></p>";
+                echo "</div>";
+            }
+        }
     }
     
     // Vista única del proceso de checkout (todo en uno)
