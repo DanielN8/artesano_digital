@@ -287,22 +287,25 @@ switch ($accion) {
         
     case 'vaciar_carrito':
         if ($usuarioAutenticado) {
-            $modeloCarrito->vaciarCarrito($idUsuario);
+            // Vaciar el carrito en la base de datos
+            $resultado = $modeloCarrito->vaciarCarrito($idUsuario);
+            
+            // Vaciar también el carrito en la sesión
+            $_SESSION['carrito'] = [];
+            
             $respuesta = [
-                'exitoso' => true,
-                'mensaje' => 'Carrito vaciado',
+                'exitoso' => $resultado,
+                'mensaje' => $resultado ? 'Carrito vaciado correctamente' : 'Error al vaciar el carrito',
                 'carrito' => [],
                 'total' => 0
             ];
-            
-            // Actualizar el carrito en la sesión
-            $_SESSION['carrito'] = [];
         } else {
-            // Vaciar el carrito en sesión
+            // Vaciar el carrito de la sesión
             $_SESSION['carrito'] = [];
+            
             $respuesta = [
                 'exitoso' => true,
-                'mensaje' => 'Carrito vaciado',
+                'mensaje' => 'Carrito vaciado correctamente',
                 'carrito' => [],
                 'total' => 0
             ];
