@@ -1,0 +1,91 @@
+2025-07-04 20:39:07 - Método: GET
+2025-07-04 20:39:14 - Método: GET
+2025-07-04 20:46:42 - Método: GET
+2025-07-04 20:46:48 - Método: GET
+2025-07-04 20:54:46 - Método: GET
+2025-07-04 20:54:47 - Método: GET
+2025-07-04 20:55:55 - Método: GET
+2025-07-04 20:55:56 - Método: GET
+2025-07-04 20:55:56 - Método: GET
+2025-07-04 20:56:15 - Método: GET
+2025-07-04 20:56:20 - Método: GET
+2025-07-04 20:56:34 - Método: GET
+2025-07-04 20:56:34 - Método: GET
+2025-07-04 20:56:37 - Método: GET
+2025-07-04 20:56:45 - Método: GET
+2025-07-04 20:59:04 - Método: GET
+2025-07-04 20:59:11 - Método: POST
+2025-07-04 20:59:11 - POST: Array
+(
+    [csrf_token] => ff932849a925d7e5a19d1f3e027d72f36b3f6fe9991d7cb22b7a0be17f360aea
+    [nombre] => Daniel
+    [direccion] => panama
+    [ciudad] => dsadsad
+    [telefono] => 6123-4567
+)
+
+2025-07-04 20:59:23 - Método: GET
+2025-07-04 21:22:19 - Método: GET
+2025-07-04 21:22:26 - Método: POST
+2025-07-04 21:22:26 - POST: Array
+(
+    [csrf_token] => ff932849a925d7e5a19d1f3e027d72f36b3f6fe9991d7cb22b7a0be17f360aea
+    [nombre] => Daniel
+    [direccion] => panama
+    [ciudad] => dsadsad
+    [telefono] => 6123-4567
+)
+
+2025-07-04 21:22:33 - Método: GET
+2025-07-06 20:00:08 - Método: GET
+2025-07-06 20:00:16 - Método: POST
+2025-07-06 20:00:16 - POST: Array
+(
+    [csrf_token] => fafebdfa990f473fe19bdfb121ecf3cb5178b3b3a93ee73e10ebb110e7c44818
+    [nombre] => Daniel
+    [direccion] => panama
+    [ciudad] => dsadsad
+    [telefono] => 6123-4567
+)
+
+2025-07-06 20:01:18 - Método: GET
+2025-07-06 20:19:00 - Método: GET
+2025-07-07 07:45:42 - Método: GET
+2025-07-07 07:45:51 - Método: POST
+2025-07-07 07:45:51 - POST: Array
+(
+    [csrf_token] => 0862dae7a8a4ef12fdd54968b74e180b23a89cf94832dae7f6abd06195b91815
+    [nombre] => Daniel
+    [direccion] => panama
+    [ciudad] => dsadsad
+    [telefono] => 6123-4567
+)
+
+2025-07-07 07:47:47 - Método: GET
+2025-07-07 07:54:07 - Método: GET
+2025-07-07 07:54:12 - Método: POST
+2025-07-07 07:54:12 - POST: Array
+(
+    [csrf_token] => 0862dae7a8a4ef12fdd54968b74e180b23a89cf94832dae7f6abd06195b91815
+    [nombre] => Daniel
+    [direccion] => panama
+    [ciudad] => dsadsad
+    [telefono] => 6123-4567
+)
+
+2025-07-07 07:54:16 - Método: GET
+2025-07-07 07:54:25 - Método: POST
+2025-07-07 07:54:25 - POST: Array
+(
+    [csrf_token] => 0862dae7a8a4ef12fdd54968b74e180b23a89cf94832dae7f6abd06195b91815
+    [nombre] => Daniel
+    [direccion] => panama
+    [ciudad] => dsadsad
+    [telefono] => 6123-4567
+)
+
+2025-07-07 08:05:03 - Método: GET
+2025-07-07 08:05:06 - Método: GET
+2025-07-07 18:29:09 - Método: GET
+2025-07-07 18:29:24 - Método: GET
+2025-07-08 17:17:28 - Método: GET
