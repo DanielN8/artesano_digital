@@ -109,10 +109,18 @@ class ControladorCheckout
 
     // Paso 4: Completado
     public function completado() {
+        // Si tenemos información del pedido en la sesión, mostramos la página de completado directamente
+        if (!empty($_SESSION['pedido_completado'])) {
+            $this->cargarVista('checkout/completado');
+            return;
+        }
+        
+        // Si no estamos en el paso correcto del checkout y no hay pedido completado, redirigir al paso correcto
         if (empty($_SESSION['checkout_direccion']) || empty($_SESSION['checkout_metodo_pago']) || empty($_SESSION['checkout_datos_pago'])) {
             header('Location: /artesanoDigital/checkout/direccion');
             exit;
         }
+        
         if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $token = $_POST['csrf_token'] ?? '';
             if (!$this->gestorAuth->verificarTokenCSRF($token)) {
@@ -136,6 +144,15 @@ class ControladorCheckout
             
             $productos = $this->modeloCarrito->obtenerProductos($usuario['id_usuario']);
             
+            // Verificar que los productos tengan los IDs correctos
+            foreach ($productos as $key => $producto) {
+                if (!isset($producto['id_producto']) || empty($producto['id_producto'])) {
+                    error_log("Error: Producto sin ID en el carrito: " . print_r($producto, true));
+                    // Si no tiene ID, no lo incluiremos en el pedido
+                    unset($productos[$key]);
+                }
+            }
+            
             $datosPedido = [
                 'id_usuario' => $usuario['id_usuario'],
                 'metodo_pago' => $metodo,
@@ -152,17 +169,34 @@ class ControladorCheckout
                 exit;
             }
             
-            // Vaciar el carrito después de crear el pedido
-            $this->modeloCarrito->vaciarCarrito($usuario['id_usuario']);
-            unset($_SESSION['carrito']);
-            unset($_SESSION['checkout_direccion'], $_SESSION['checkout_metodo_pago'], $_SESSION['checkout_datos_pago']);
-            
             // Guardar información del pedido para mostrarla en la vista de completado
+            // Lo guardamos primero para asegurarnos de tener toda la información antes de vaciar el carrito
             $_SESSION['pedido_completado'] = [
                 'id_pedido' => $resultadoPedido['id_pedido'],
+                'referencia' => 'AD-' . str_pad($resultadoPedido['id_pedido'], 5, '0', STR_PAD_LEFT),
                 'transaccion_id' => $resultadoPago['transaccion_id'] ?? null,
-                'total' => $total
+                'total' => $total,
+                'fecha' => date('Y-m-d H:i:s'),
+                'metodo_pago' => $metodo,
+                'productos' => array_map(function($producto) {
+                    return [
+                        'id_producto' => $producto['id_producto'],
+                        'nombre' => $producto['nombre'],
+                        'cantidad' => $producto['cantidad'],
+                        'precio' => $producto['precio']
+                    ];
+                }, $productos)
             ];
+            
+            // Asegurar que se vacía el carrito en la base de datos
+            $resultadoVaciar = $this->modeloCarrito->vaciarCarrito($usuario['id_usuario']);
+            if (!$resultadoVaciar) {
+                error_log("Error al vaciar el carrito en la base de datos para el usuario: " . $usuario['id_usuario']);
+            }
+            
+            // Vaciar también el carrito en sesión y datos de checkout
+            unset($_SESSION['carrito']);
+            unset($_SESSION['checkout_direccion'], $_SESSION['checkout_metodo_pago'], $_SESSION['checkout_datos_pago']);
             
             $this->cargarVista('checkout/completado');
             exit;

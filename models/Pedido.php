@@ -46,6 +46,12 @@ class Pedido
 
             // Agregar productos al pedido
             foreach ($datos['productos'] as $producto) {
+                // Verificar que el producto tenga un ID válido
+                if (!isset($producto['id_producto']) || empty($producto['id_producto'])) {
+                    error_log("Error: Se intentó guardar un producto sin ID: " . print_r($producto, true));
+                    continue; // Saltar este producto
+                }
+                
                 $sqlProducto = "INSERT INTO pedido_productos (id_pedido, id_producto, cantidad, precio_unitario) 
                                VALUES (:id_pedido, :id_producto, :cantidad, :precio_unitario)";
 
@@ -116,6 +122,32 @@ class Pedido
         } catch (Exception $e) {
             error_log("Error al actualizar estado del pedido: " . $e->getMessage());
             return false;
+        }
+    }
+
+    /**
+     * Obtiene los productos de un pedido específico
+     * @param int $idPedido
+     * @return array
+     */
+    public function obtenerProductosPedido(int $idPedido): array 
+    {
+        try {
+            $sql = "SELECT pp.id_pedido_producto, pp.id_producto, pp.cantidad, pp.precio_unitario,
+                           p.nombre, p.descripcion, p.imagen
+                    FROM pedido_productos pp
+                    INNER JOIN productos p ON pp.id_producto = p.id_producto
+                    WHERE pp.id_pedido = :id_pedido
+                    ORDER BY pp.id_pedido_producto ASC";
+            
+            $stmt = $this->conexion->prepare($sql);
+            $stmt->execute(['id_pedido' => $idPedido]);
+            
+            return $stmt->fetchAll(PDO::FETCH_ASSOC);
+            
+        } catch (Exception $e) {
+            error_log("Error al obtener productos del pedido: " . $e->getMessage());
+            return [];
         }
     }
 }

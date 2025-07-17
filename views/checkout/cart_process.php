@@ -1,9 +1,205 @@
+
 <?php
+// --- Sincronización del carrito desde localStorage a la sesión PHP (AJAX) ---
+if (
+    $_SERVER['REQUEST_METHOD'] === 'POST' &&
+    isset($_POST['sincronizar_carrito']) &&
+    isset($_POST['carrito_json']) &&
+    empty($_SESSION['carrito'])
+) {
+    $carritoLocal = json_decode($_POST['carrito_json'], true);
+    $productos = [];
+    if (is_array($carritoLocal)) {
+        foreach ($carritoLocal as $item) {
+            // Normalizar campos del localStorage a formato backend
+            $productos[] = [
+                'id_producto' => $item['id'] ?? $item['id_producto'] ?? null,
+                'nombre' => $item['nombre'] ?? $item['name'] ?? '',
+                'precio' => $item['precio'] ?? $item['price'] ?? 0,
+                'cantidad' => $item['cantidad'] ?? $item['quantity'] ?? 1,
+                'id_tienda' => $item['id_tienda'] ?? null,
+                'id_usuario_tienda' => $item['id_usuario_tienda'] ?? null
+            ];
+        }
+        $_SESSION['carrito'] = $productos;
+        echo json_encode(['ok' => true, 'msg' => 'Carrito sincronizado en sesión']);
+        exit;
+    }
+    echo json_encode(['ok' => false, 'msg' => 'Formato de carrito inválido']);
+    exit;
+}
 // Vista: Proceso de checkout en una sola página
 // Esta vista contiene todos los pasos del proceso de compra
 
+// --- SINCRONIZACIÓN DEL CARRITO: Recibir carrito por AJAX y guardar en $_SESSION['carrito'] ---
+if (
+    $_SERVER['REQUEST_METHOD'] === 'POST' &&
+    isset($_POST['accion']) && $_POST['accion'] === 'sincronizar_carrito' &&
+    isset($_POST['carrito'])
+) {
+    $data = json_decode($_POST['carrito'], true);
+    if (is_array($data)) {
+        // Normalizar formato: asegurarse de que cada producto tiene id_producto, nombre, cantidad, precio
+        $productos = array_map(function($prod) {
+            return [
+                'id_producto' => $prod['id_producto'] ?? $prod['id'] ?? null,
+                'nombre' => $prod['nombre'] ?? $prod['name'] ?? '',
+                'cantidad' => $prod['cantidad'] ?? $prod['quantity'] ?? 1,
+                'precio' => $prod['precio'] ?? $prod['price'] ?? 0,
+                // Puedes agregar más campos si tu app los usa
+                'id_tienda' => $prod['id_tienda'] ?? null,
+                'id_usuario_tienda' => $prod['id_usuario_tienda'] ?? null
+            ];
+        }, $data);
+        $_SESSION['carrito'] = $productos;
+        echo json_encode(['ok' => true, 'msg' => 'Carrito sincronizado en sesión', 'count' => count($productos)]);
+    } else {
+        echo json_encode(['ok' => false, 'msg' => 'Formato de carrito inválido']);
+    }
+    exit;
+}
+
 // Iniciar buffer de salida
 ob_start();
+
+/**
+ * Función para vaciar completamente el carrito de compras
+ * Limpia tanto en base de datos como en sesión
+ * @param int $idUsuario ID del usuario cuyo carrito se limpiará
+ * @param \PDO $conexion Conexión a la base de datos (opcional)
+ * @return void
+ */
+function vaciarCarritoCompleto($idUsuario, $conexion = null) {
+    // Si no se proporcionó una conexión y necesitamos limpiar la BD
+    $dbConnectLocal = false;
+    if ($idUsuario && !$conexion) {
+        require_once __DIR__ . '/../../config/Database.php';
+        $db = \Config\Database::obtenerInstancia();
+        $conexion = $db->obtenerConexion();
+        $dbConnectLocal = true;
+    }
+    
+    // Limpiar en base de datos
+    if ($idUsuario && $conexion) {
+        try {
+            // Iniciar transacción si no estamos dentro de una
+            if ($dbConnectLocal) {
+                $conexion->beginTransaction();
+            }
+            
+            // Eliminar productos del carrito
+            $sqlVaciar = "DELETE FROM carrito_productos 
+                          WHERE id_carrito = (SELECT id_carrito FROM carritos WHERE id_usuario = :id_usuario)";
+            $stmtVaciar = $conexion->prepare($sqlVaciar);
+            $stmtVaciar->execute(['id_usuario' => $idUsuario]);
+            
+            // Actualizar contador y total en tabla carritos
+            $sqlActualizar = "UPDATE carritos SET cantidad_productos = 0, total = 0 
+                              WHERE id_usuario = :id_usuario";
+            $stmtActualizar = $conexion->prepare($sqlActualizar);
+            $stmtActualizar->execute(['id_usuario' => $idUsuario]);
+            
+            if ($dbConnectLocal) {
+                $conexion->commit();
+            }
+            
+            error_log("Carrito limpiado en base de datos para usuario $idUsuario");
+        } catch (\Exception $e) {
+            if ($dbConnectLocal && $conexion) {
+                $conexion->rollBack();
+            }
+            error_log("Error al limpiar carrito en BD: " . $e->getMessage());
+        }
+    }
+    
+    // Limpiar en sesión
+    $_SESSION['carrito'] = [];
+    unset($_SESSION['carrito']);
+    
+    error_log("Carrito limpiado en sesión");
+}
+
+// --- Cargar productos del carrito ---
+// Obtener usuario autenticado
+$usuario = isset($usuario) ? $usuario : $_SESSION['usuario'] ?? null;
+
+// Inicializar array de productos
+$productos = [];
+
+// 1. Intentar cargar productos de la sesión PHP
+if (isset($_SESSION['carrito']) && !empty($_SESSION['carrito'])) {
+    $productos = $_SESSION['carrito'];
+    error_log("Carrito cargado desde sesión PHP: " . count($productos) . " productos");
+}
+
+// 2. Si tenemos un usuario autenticado y no hay productos en sesión, intentar cargar de la base de datos
+if (empty($productos) && $usuario && isset($usuario['id_usuario'])) {
+    try {
+        require_once __DIR__ . '/../../models/Carrito.php';
+        $carritoModel = new \Models\Carrito();
+        $productosDB = $carritoModel->obtenerProductos($usuario['id_usuario']);
+        if (!empty($productosDB)) {
+            // Asegurarse de que cada producto tiene id_producto
+            $productos = array_filter($productosDB, function($prod) {
+                return isset($prod['id_producto']);
+            });
+            // Actualizar la sesión con los productos encontrados
+            $_SESSION['carrito'] = $productos;
+            error_log("Carrito cargado desde BD: " . count($productos) . " productos");
+        }
+    } catch (\Exception $e) {
+        error_log("Error al cargar carrito de BD: " . $e->getMessage());
+    }
+}
+
+// Calcular total del carrito para tenerlo disponible en toda la página
+$total_carrito = 0;
+if (!empty($productos)) {
+    foreach ($productos as $producto) {
+        $precio = floatval($producto['precio']);
+        $cantidad = intval($producto['cantidad']);
+        $total_carrito += ($precio * $cantidad);
+    }
+    error_log("Total calculado al cargar la página: " . $total_carrito);
+}
+
+// --- SINCRONIZACIÓN DEL CARRITO: Si el carrito de sesión está vacío, pero hay carrito en localStorage, sincronizar ---
+?>
+<script>
+// --- Sincronización automática del carrito localStorage -> sesión PHP ---
+document.addEventListener('DOMContentLoaded', function() {
+  // Si el carrito PHP está vacío pero hay carrito en localStorage, sincronizar
+  var phpCartVacio = <?php echo empty($productos) ? 'true' : 'false'; ?>;
+  var localCart = localStorage.getItem('artesanoDigital_cart') || localStorage.getItem('carrito_items');
+  if (phpCartVacio && localCart) {
+    try {
+      var carrito = JSON.parse(localCart);
+      // Si el formato es { productos: [...] }, usar solo el array
+      if (carrito && carrito.productos) {
+        carrito = carrito.productos;
+      }
+      // Enviar por AJAX a este mismo archivo
+      var xhr = new XMLHttpRequest();
+      xhr.open('POST', window.location.href, true);
+      xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
+      xhr.onreadystatechange = function() {
+        if (xhr.readyState === 4 && xhr.status === 200) {
+          try {
+            var resp = JSON.parse(xhr.responseText);
+            if (resp.ok) {
+              // Recargar para mostrar el carrito sincronizado
+              window.location.reload();
+            }
+          } catch (e) {}
+        }
+      };
+      xhr.send('sincronizar_carrito=1&carrito_json=' + encodeURIComponent(JSON.stringify(carrito)));
+      return; // Detener el resto del script hasta recargar
+    } catch (e) {}
+  }
+});
+</script>
+<?php
 
 // --- Patrón Strategy para métodos de pago ---
 interface MetodoPagoStrategy {
@@ -58,7 +254,29 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['finalizar_compra'])) 
         exit;
     }
     
-    $monto = $total ?? 0;
+    // Los productos ya se cargaron al inicio del script, pero verificamos si hay cambios
+    if (empty($productos)) {
+        echo '<div class="alert alert-danger">No hay productos en el carrito</div>';
+        error_log("No se encontraron productos en el carrito al procesar el pago");
+    }
+    
+    // Usar el total ya calculado en la carga inicial
+    $monto = $total_carrito;
+    
+    // Registramos el detalle del carrito para depuración
+    error_log("Procesando pago con " . count($productos) . " productos");
+    foreach ($productos as $key => $producto) {
+        $precio = floatval($producto['precio']);
+        $cantidad = intval($producto['cantidad']);
+        $subtotal = $precio * $cantidad;
+        
+        // Registrar para depuración
+        error_log("Producto {$key}: {$producto['nombre']}, Precio: {$precio}, Cantidad: {$cantidad}, Subtotal: {$subtotal}");
+    }
+    
+    // Asegurarnos de que el monto es un número
+    error_log("Total calculado para el pago: {$monto}");
+    
     $metodo = $_POST['metodo_pago'] ?? '';
     $datosPago = [];
     
@@ -104,16 +322,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['finalizar_compra'])) 
             $conexion->beginTransaction();
             
             // 1. Guardar pedido en la tabla pedidos
+            // Asegurarse de que el monto sea un número decimal correcto para la base de datos
+            $montoNumerico = floatval($monto);
+            
+            // Registrar el valor para depuración
+            error_log("Guardando pedido con total: " . $montoNumerico . " (tipo: " . gettype($montoNumerico) . ")");
+            
             $sqlPedido = "INSERT INTO pedidos (id_usuario, estado, metodo_pago, total, fecha_pedido, direccion_envio) 
                           VALUES (:id_usuario, 'pendiente', :metodo_pago, :total, NOW(), :direccion_envio)";
             
             $stmtPedido = $conexion->prepare($sqlPedido);
-            $stmtPedido->execute([
-                'id_usuario' => $usuario['id_usuario'],
-                'metodo_pago' => $metodo,
-                'total' => $monto,
-                'direccion_envio' => $direccionEnvio
-            ]);
+            
+            // Usar bindValue con PDO::PARAM_STR para asegurar que se pase como string numérico
+            $stmtPedido->bindValue(':id_usuario', $usuario['id_usuario'], PDO::PARAM_INT);
+            $stmtPedido->bindValue(':metodo_pago', $metodo, PDO::PARAM_STR);
+            $stmtPedido->bindValue(':total', number_format($montoNumerico, 2, '.', ''), PDO::PARAM_STR);
+            $stmtPedido->bindValue(':direccion_envio', $direccionEnvio, PDO::PARAM_STR);
+            $stmtPedido->execute();
             
             $idPedido = $conexion->lastInsertId();
             
@@ -170,55 +395,81 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['finalizar_compra'])) 
                 ]);
             }
             
-            // 4. Vaciar carrito del usuario
-            $sqlVaciarCarrito = "DELETE FROM carrito_productos 
-                                 WHERE id_carrito = (SELECT id_carrito FROM carritos WHERE id_usuario = :id_usuario)";
-            
-            $stmtVaciarCarrito = $conexion->prepare($sqlVaciarCarrito);
-            $stmtVaciarCarrito->execute(['id_usuario' => $usuario['id_usuario']]);
+            // 4. Vaciar carrito del usuario usando la función centralizada
+            // Hacemos esto antes de confirmar la transacción para que sea parte de la misma
+            // Si algo falla, el rollback restaurará el carrito en la base de datos
+            vaciarCarritoCompleto($usuario['id_usuario'], $conexion);
             
             // Confirmar transacción
             $conexion->commit();
             
             // Guardar datos del pedido en la sesión para mostrarlos en la pantalla de finalización
+            // Asegurarse de incluir todos los detalles de los productos con sus IDs
             $_SESSION['pedido_completado'] = [
                 'id_pedido' => $idPedido,
+                'referencia' => 'AD-' . str_pad($idPedido, 5, '0', STR_PAD_LEFT),
                 'fecha' => date('Y-m-d H:i:s'),
                 'total' => $monto,
+                'productos' => array_map(function($producto) {
+                    return [
+                        'id_producto' => $producto['id_producto'],
+                        'nombre' => $producto['nombre'],
+                        'cantidad' => $producto['cantidad'],
+                        'precio' => $producto['precio']
+                    ];
+                }, $productos),
                 'metodo_pago' => $metodo,
                 'transaccion_id' => $resultado['transaccion_id'] ?? null
             ];
             
-            // Vaciar carrito de la sesión
+            // El carrito ya se limpió en la función vaciarCarritoCompleto
+            // pero nos aseguramos de que la sesión esté limpia
+            $_SESSION['carrito'] = []; 
             unset($_SESSION['carrito']);
             
-            // Redireccionar al paso 4 (finalización)
+            // Redireccionar directamente a la página de finalización en lugar de usar JavaScript
+            // Esto garantiza que se complete el proceso correctamente
             echo '<script>
-                document.addEventListener("DOMContentLoaded", function() {
-                    const steps = document.querySelectorAll(".step");
-                    const stepContents = document.querySelectorAll(".checkout-step-content");
-                    
-                    // Actualizar la UI para mostrar el paso 4
-                    steps.forEach((step) => {
-                        const stepNumber = parseInt(step.getAttribute("data-step"));
-                        if (stepNumber <= 4) {
-                            step.classList.add("completed");
+                // Limpiar cualquier dato del carrito almacenado en localStorage
+                localStorage.removeItem("artesanoDigital_cart");
+                localStorage.removeItem("carrito_items");
+                sessionStorage.removeItem("artesanoDigital_cart");
+                
+                // Función para limpiar cookies relacionadas con el carrito
+                function deleteCartCookies() {
+                    const cookies = document.cookie.split(";");
+                    for (let i = 0; i < cookies.length; i++) {
+                        const cookie = cookies[i].trim();
+                        if (cookie.indexOf("carrito") >= 0 || cookie.indexOf("cart") >= 0) {
+                            document.cookie = cookie.split("=")[0] + "=;expires=Thu, 01 Jan 1970 00:00:00 GMT;path=/";
                         }
-                    });
-                    
-                    // Ocultar todos los pasos
-                    stepContents.forEach((content) => {
-                        content.style.display = "none";
-                    });
-                    
-                    // Mostrar el paso de finalización
-                    document.getElementById("step-4").style.display = "block";
-                });
+                    }
+                }
+                deleteCartCookies();
+                
+                // Redirección con JavaScript para asegurar que se aplique incluso si headers ya han sido enviados
+                window.location.href = "/artesanoDigital/checkout/completado";
             </script>';
+            
+            // Como respaldo, intentamos también con PHP header (podría no funcionar si ya se envió contenido)
+            if (!headers_sent()) {
+                header('Location: /artesanoDigital/checkout/completado');
+                exit();
+            }
             
         } catch (\Exception $e) {
             if (isset($conexion)) {
                 $conexion->rollBack();
+                
+                // Verificar si el carrito se limpió pero luego ocurrió un error
+                // Si es así, debemos recuperar los productos del carrito
+                if (!isset($_SESSION['carrito']) || empty($_SESSION['carrito'])) {
+                    error_log("Error ocurrió después de limpiar el carrito, recuperando carrito desde los productos");
+                    if (isset($productos) && !empty($productos)) {
+                        $_SESSION['carrito'] = $productos;
+                        error_log("Carrito recuperado con " . count($productos) . " productos");
+                    }
+                }
             }
             echo '<div class="alert alert-danger">Error al procesar el pedido: ' . 
                  htmlspecialchars($e->getMessage()) . '</div>';
@@ -270,12 +521,32 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['finalizar_compra'])) 
           <div class="card">
             <div class="card-body">
               <div id="cart-summary-step2">
-                <!-- Aquí se mostrarán los productos del carrito -->
+                <!-- Mostrar productos del carrito con PHP -->
+                <?php if (!empty($productos)): ?>
+                <ul class="list-group list-group-flush">
+                  <?php 
+                  $total = 0;
+                  foreach ($productos as $producto): 
+                    $subtotal = $producto['precio'] * $producto['cantidad'];
+                    $total += $subtotal;
+                  ?>
+                  <li class="list-group-item d-flex justify-content-between align-items-center">
+                    <div>
+                      <span><?php echo htmlspecialchars($producto['nombre']); ?></span>
+                      <span class="badge badge-primary ml-2">x<?php echo $producto['cantidad']; ?></span>
+                    </div>
+                    <span>B/. <?php echo number_format($subtotal, 2); ?></span>
+                  </li>
+                  <?php endforeach; ?>
+                </ul>
+                <?php else: ?>
+                <p class="text-center text-muted">No hay productos en el carrito</p>
+                <?php endif; ?>
               </div>
               <hr>
               <div class="d-flex justify-content-between font-weight-bold">
                 <span>Total:</span>
-                <span id="cart-summary-total-step2">$0.00</span>
+                <span id="cart-summary-total-step2">B/. <?php echo number_format($total ?? 0, 2); ?></span>
               </div>
             </div>
           </div>
@@ -382,16 +653,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['finalizar_compra'])) 
           <div class="summary-section">
             <h4>Resumen de productos</h4>
             <div class="summary-products">
-              <?php foreach ($productos as $producto): ?>
-                <div class="summary-product">
-                  <span class="product-name"><?php echo htmlspecialchars($producto['nombre']); ?></span>
-                  <span class="product-quantity">x<?php echo $producto['cantidad']; ?></span>
-                  <span class="product-price">B/. <?php echo number_format($producto['precio'] * $producto['cantidad'], 2); ?></span>
-                </div>
-              <?php endforeach; ?>
+              <?php if(!empty($productos)): ?>
+                <?php foreach ($productos as $producto): ?>
+                  <div class="summary-product">
+                    <span class="product-name"><?php echo htmlspecialchars($producto['nombre']); ?></span>
+                    <span class="product-quantity">x<?php echo $producto['cantidad']; ?></span>
+                    <span class="product-price">B/. <?php echo number_format($producto['precio'] * $producto['cantidad'], 2); ?></span>
+                  </div>
+                <?php endforeach; ?>
+              <?php else: ?>
+                <p class="text-center text-muted">No hay productos en el carrito</p>
+              <?php endif; ?>
               <div class="summary-total">
                 <span>Total a pagar:</span>
-                <span class="total-price">B/. <?php echo number_format($total, 2); ?></span>
+                <span class="total-price">B/. <?php echo number_format($total_carrito, 2); ?></span>
               </div>
             </div>
           </div>
@@ -433,26 +708,56 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['finalizar_compra'])) 
           <div class="completion-icon">
             <i class="fas fa-check-circle"></i>
           </div>
-          <h2>¡Pedido Completado con Éxito!</h2>
-          <p class="lead">Gracias por tu compra. Tu pedido ha sido procesado correctamente.</p>
+          <h2>¡Gracias por comprar en Artesanos Digital!</h2>
+          <p class="lead">Tu pedido ha sido registrado exitosamente.</p>
           
           <?php if (isset($_SESSION['pedido_completado'])): ?>
           <div class="order-details">
-            <h4>Detalles del Pedido</h4>
-            <p><strong>Número de Pedido:</strong> #<?php echo $_SESSION['pedido_completado']['id_pedido']; ?></p>
+            <?php 
+              // Generar un código de pedido con formato corto de Artesanos Digital
+              $codigoPedido = 'AD-' . date('Ymd') . '-' . $_SESSION['pedido_completado']['id_pedido'] . rand(100, 999);
+            ?>
+            <h3 class="text-success">Pedido #<?php echo $codigoPedido; ?></h3>
             <p><strong>Fecha:</strong> <?php echo date('d/m/Y H:i', strtotime($_SESSION['pedido_completado']['fecha'])); ?></p>
-            <p><strong>Total:</strong> B/. <?php echo number_format($_SESSION['pedido_completado']['total'], 2); ?></p>
+            <p><strong>Total:</strong> B/. <?php 
+              // Usamos el valor calculado si está disponible, sino el almacenado en la sesión
+              $totalCompletado = isset($total_carrito) ? $total_carrito : $_SESSION['pedido_completado']['total'];
+              echo number_format($totalCompletado, 2); 
+            ?></p>
             <p><strong>Método de Pago:</strong> <?php echo $_SESSION['pedido_completado']['metodo_pago'] === 'tarjeta' ? 'Tarjeta de Crédito/Débito' : 'Yappy'; ?></p>
             <?php if (isset($_SESSION['pedido_completado']['transaccion_id'])): ?>
             <p><strong>ID de Transacción:</strong> <?php echo $_SESSION['pedido_completado']['transaccion_id']; ?></p>
             <?php endif; ?>
+            <p class="text-info">Número de registro interno: #<?php echo $_SESSION['pedido_completado']['id_pedido']; ?></p>
+
+            <?php if (!empty($_SESSION['pedido_completado']['productos'])): ?>
+            <div class="productos-pedido mt-4">
+              <h5>Productos adquiridos:</h5>
+              <ul class="list-group">
+                <?php foreach ($_SESSION['pedido_completado']['productos'] as $producto): ?>
+                <li class="list-group-item d-flex justify-content-between align-items-center">
+                  <div>
+                    <strong><?php echo htmlspecialchars($producto['nombre']); ?></strong>
+                    <span class="badge badge-primary ml-2">×<?php echo $producto['cantidad']; ?></span>
+                  </div>
+                  <span>B/. <?php echo number_format($producto['precio'] * $producto['cantidad'], 2); ?></span>
+                </li>
+                <?php endforeach; ?>
+              </ul>
+            </div>
+            <?php endif; ?>
+          </div>
+          <?php else: ?>
+          <div class="order-details">
+            <h3 class="text-success">Pedido #AD-<?php echo date('Ymd') . '-' . rand(1000, 9999); ?></h3>
+            <p><strong>Estado:</strong> <span class="badge badge-success">Procesado</span></p>
           </div>
           <?php endif; ?>
           
           <p class="mt-4">Te hemos enviado un correo electrónico con la confirmación de tu pedido.</p>
           
           <div class="completion-actions mt-4">
-            <a href="/artesanoDigital/cliente/pedidos" class="btn btn-outline-primary mr-3">Ver mis pedidos</a>
+            <a href="/artesanoDigital/dashboard/cliente" class="btn btn-outline-primary mr-3">Ver mis pedidos</a>
             <a href="/artesanoDigital" class="btn btn-primary">Seguir comprando</a>
           </div>
         </div>
@@ -723,44 +1028,173 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['finalizar_compra'])) 
 }
 </style>
 
-<script>
 document.addEventListener('DOMContentLoaded', function() {
+<script>
+// --- Sincronización automática del carrito localStorage -> sesión PHP ---
+document.addEventListener('DOMContentLoaded', function() {
+  // Si el carrito PHP está vacío pero hay carrito en localStorage, sincronizar
+  var phpCartVacio = <?php echo empty($productos) ? 'true' : 'false'; ?>;
+  var localCart = localStorage.getItem('artesanoDigital_cart') || localStorage.getItem('carrito_items');
+  if (phpCartVacio && localCart) {
+    try {
+      var carrito = JSON.parse(localCart);
+      // Si el formato es { productos: [...] }, usar solo el array
+      if (carrito && carrito.productos) {
+        carrito = carrito.productos;
+      }
+      // Enviar por AJAX a este mismo archivo
+      var xhr = new XMLHttpRequest();
+      xhr.open('POST', window.location.href, true);
+      xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
+      xhr.onreadystatechange = function() {
+        if (xhr.readyState === 4 && xhr.status === 200) {
+          try {
+            var resp = JSON.parse(xhr.responseText);
+            if (resp.ok) {
+              // Recargar para mostrar el carrito sincronizado
+              window.location.reload();
+            }
+          } catch (e) {}
+        }
+      };
+      xhr.send('sincronizar_carrito=1&carrito_json=' + encodeURIComponent(JSON.stringify(carrito)));
+      return; // Detener el resto del script hasta recargar
+    } catch (e) {}
+  }
+  console.log("Inicializando script de checkout");
+  
   // Variables
   const steps = document.querySelectorAll('.step');
   const stepContents = document.querySelectorAll('.checkout-step-content');
   const nextButtons = document.querySelectorAll('.next-step');
   const prevButtons = document.querySelectorAll('.prev-step');
   const paymentMethods = document.querySelectorAll('input[name="metodo_pago"]');
-  const paymentDetails = document.querySelectorAll('.payment-details');
   const form = document.getElementById('checkout-form');
   const cartMessageContainer = document.getElementById('cart-message-container');
-  // Iniciar en el paso de dirección (ahora paso 1)
+  
+  // Asegurarse de que el carrito está actualizado con la información del servidor
+  // Esto evita diferencias entre el localStorage y la sesión/base de datos
+  
+  // Cargar información del carrito
+  cargarDatosCarrito();
+  
+  // Función para cargar datos del carrito desde localStorage o sesión
+  function cargarDatosCarrito() {
+    console.log("Cargando datos del carrito...");
+    
+    // Intentar obtener datos del carrito desde varias fuentes
+    let cartData;
+    
+    try {
+      // 1. Primero intentar desde localStorage
+      if (localStorage.getItem('artesanoDigital_cart')) {
+        cartData = JSON.parse(localStorage.getItem('artesanoDigital_cart'));
+        console.log("Carrito cargado desde localStorage");
+      } 
+      // 2. Si no, intentar desde sessionStorage
+      else if (sessionStorage.getItem('artesanoDigital_cart')) {
+        cartData = JSON.parse(sessionStorage.getItem('artesanoDigital_cart'));
+        console.log("Carrito cargado desde sessionStorage");
+      }
+      
+      // Si tenemos datos, mostrarlos
+      if (cartData && cartData.productos && cartData.productos.length > 0) {
+        mostrarProductosCarrito(cartData.productos);
+        actualizarTotalCarrito(cartData.productos);
+      } else {
+        // Si no hay datos en storage, usar los datos renderizados por PHP (de $_SESSION['carrito'])
+        console.log("Usando datos de carrito de la sesión PHP");
+      }
+    } catch (e) {
+      console.error("Error al cargar datos del carrito:", e);
+    }
+  }
+  
+  // Función para mostrar productos en el resumen
+  function mostrarProductosCarrito(productos) {
+    const cartSummaryContainer = document.getElementById('cart-summary-step2');
+    if (!cartSummaryContainer) return;
+    
+    let html = '<ul class="list-group list-group-flush">';
+    
+    productos.forEach(producto => {
+      html += `
+        <li class="list-group-item d-flex justify-content-between align-items-center">
+          <div>
+            <span>${producto.nombre || producto.name}</span>
+            <span class="badge badge-primary ml-2">x${producto.cantidad || producto.quantity}</span>
+          </div>
+          <span>B/. ${((producto.precio || producto.price) * (producto.cantidad || producto.quantity)).toFixed(2)}</span>
+        </li>
+      `;
+    });
+    
+    html += '</ul>';
+    cartSummaryContainer.innerHTML = html;
+  }
+  
+  // Función para actualizar el total del carrito
+  function actualizarTotalCarrito(productos) {
+    const totalElement = document.getElementById('cart-summary-total-step2');
+    if (!totalElement) return;
+    
+    let total = 0;
+    productos.forEach(producto => {
+      const precio = parseFloat(producto.precio || producto.price);
+      const cantidad = parseInt(producto.cantidad || producto.quantity);
+      total += precio * cantidad;
+    });
+    
+    totalElement.textContent = `B/. ${total.toFixed(2)}`;
+  }
+  
+  console.log("Pasos encontrados:", steps.length);
+  console.log("Contenidos de pasos encontrados:", stepContents.length);
+  console.log("Botones siguiente encontrados:", nextButtons.length);
+  
+  // Iniciar en el paso 1 (Dirección)
   let currentStep = 1;
   
-  // Inicializar - mostrar el paso 1 (dirección) directamente
-  updateSteps();
-
-  // Sincronizar carrito al cargar la página
-  sincronizarCarritoCheckout();
+  // Debugging
+  console.log('Script inicializado. Elementos encontrados:');
+  console.log('- Pasos:', steps.length);
+  console.log('- Contenidos de pasos:', stepContents.length);
+  console.log('- Botones siguiente:', nextButtons.length);
+  console.log('- Botones anterior:', prevButtons.length);
+  console.log('- Métodos de pago:', paymentMethods.length);
+  console.log('- Formulario:', form ? 'Sí' : 'No');
   
-  // Actualizar el resumen con los datos del carrito para que se muestre en el paso 2
-  setTimeout(updateSummary, 500);
-
+  // Inicializar - mostrar el paso 1 directamente
+  updateSteps();
+  
   // Event listeners para botones siguiente
   nextButtons.forEach(button => {
-    button.addEventListener('click', function() {
+    button.addEventListener('click', function(e) {
+      e.preventDefault();
+      console.log('Botón siguiente clickeado en paso:', currentStep);
+      
       if (validateStep(currentStep)) {
         currentStep++;
+        console.log('Avanzando al paso:', currentStep);
         updateSteps();
         updateSummary();
+        
+        // Si es el último paso, scroll hacia arriba para ver el botón de finalizar
+        if (currentStep === 3) {
+          window.scrollTo({top: 0, behavior: 'smooth'});
+        }
       }
     });
   });
 
   // Event listeners para botones anterior
   prevButtons.forEach(button => {
-    button.addEventListener('click', function() {
+    button.addEventListener('click', function(e) {
+      e.preventDefault();
+      console.log('Botón anterior clickeado en paso:', currentStep);
+      
       currentStep--;
+      if (currentStep < 1) currentStep = 1;
       updateSteps();
     });
   });
@@ -768,8 +1202,8 @@ document.addEventListener('DOMContentLoaded', function() {
   // Event listeners para métodos de pago
   paymentMethods.forEach(method => {
     method.addEventListener('change', function() {
-      // Ocultar todos los detalles
-      paymentDetails.forEach(details => {
+      // Ocultar todos los detalles de pagos
+      document.querySelectorAll('.payment-details').forEach(details => {
         details.style.display = 'none';
       });
       
@@ -784,51 +1218,56 @@ document.addEventListener('DOMContentLoaded', function() {
   // Validación antes de envío del formulario
   if (form) {
     form.addEventListener('submit', function(e) {
+      console.log('Formulario enviado en paso:', currentStep);
+      
+      // Solo permitir enviar el formulario en el paso 3 (confirmación)
+      if (currentStep !== 3) {
+        e.preventDefault();
+        console.log('Envío bloqueado: no estamos en el paso de confirmación');
+        mostrarMensaje('Por favor complete todos los pasos antes de finalizar', 'warning');
+        return false;
+      }
+      
+      // Validar campos del paso actual
       if (!validateStep(3)) {
         e.preventDefault();
+        console.log('Envío bloqueado: validación fallida');
+        mostrarMensaje('Por favor completa todos los campos requeridos', 'error');
+        return false;
+      }
+      
+      // Todo correcto, añadir bandera para finalizar compra
+      const hiddenInput = document.createElement('input');
+      hiddenInput.type = 'hidden';
+      hiddenInput.name = 'finalizar_compra';
+      hiddenInput.value = '1';
+      form.appendChild(hiddenInput);
+      
+      console.log('Formulario validado, enviando...');
+      return true;
+    });
+  }
+  
+  // Asegurar que el botón de completar compra funciona correctamente
+  const btnCompletarCompra = document.getElementById('btn-completar-compra');
+  if (btnCompletarCompra) {
+    btnCompletarCompra.addEventListener('click', function(e) {
+      e.preventDefault();
+      if (validateStep(3)) {
+        form.submit();
       }
     });
   }
   
-  // Función para mostrar mensajes
-  function mostrarMensaje(mensaje, tipo = 'info') {
-    // Si hay un contenedor específico para mensajes del carrito, usarlo
-    if (cartMessageContainer) {
-      // Crear una alerta Bootstrap
-      const alertClass = tipo === 'error' ? 'alert-danger' : 
-                        tipo === 'success' ? 'alert-success' : 
-                        tipo === 'warning' ? 'alert-warning' : 'alert-info';
-      
-      cartMessageContainer.innerHTML = `
-        <div class="alert ${alertClass} alert-dismissible fade show" role="alert">
-          ${mensaje}
-          <button type="button" class="close" data-dismiss="alert" aria-label="Close">
-            <span aria-hidden="true">&times;</span>
-          </button>
-        </div>
-      `;
-      
-      // Desplazar hacia arriba para mostrar el mensaje
-      cartMessageContainer.scrollIntoView({behavior: 'smooth'});
-      
-      // Auto-cerrar después de 3 segundos
-      setTimeout(() => {
-        const alert = cartMessageContainer.querySelector('.alert');
-        if (alert) {
-          alert.classList.remove('show');
-          setTimeout(() => {
-            cartMessageContainer.innerHTML = '';
-          }, 150);
-        }
-      }, 3000);
-    } else {
-      // Alternativa: usar alert estándar
-      alert(mensaje);
-    }
-  }
-
-  // Actualizar los pasos (mostrar/ocultar)
+  // Funciones auxiliares
   function updateSteps() {
+    console.log('Actualizando pasos al paso:', currentStep);
+    
+    // Asegurar que currentStep es válido
+    if (currentStep < 1) currentStep = 1;
+    if (currentStep > 4) currentStep = 4;
+    
+    // Actualizar indicadores de paso
     steps.forEach((step, index) => {
       const stepNumber = index + 1;
       
@@ -843,17 +1282,24 @@ document.addEventListener('DOMContentLoaded', function() {
       }
     });
     
+    // Mostrar solo el contenido del paso actual
     stepContents.forEach((content, index) => {
       const stepNumber = index + 1;
-      if (stepNumber === currentStep) {
-        content.style.display = 'block';
+      
+      if (content) {
+        if (stepNumber === currentStep) {
+          content.style.display = 'block';
+          console.log(`Mostrando contenido del paso ${stepNumber}`);
+        } else {
+          content.style.display = 'none';
+          console.log(`Ocultando contenido del paso ${stepNumber}`);
+        }
       } else {
-        content.style.display = 'none';
+        console.warn(`No se encontró el contenido para el paso ${stepNumber}`);
       }
     });
   }
 
-  // Validación de cada paso
   function validateStep(step) {
     switch(step) {
       case 1:
@@ -895,190 +1341,107 @@ document.addEventListener('DOMContentLoaded', function() {
         
       case 3:
         // Validar aceptación de términos
-        if (!document.getElementById('acepto-terminos').checked) {
+        const aceptoTerminos = document.getElementById('acepto-terminos');
+        if (!aceptoTerminos || !aceptoTerminos.checked) {
           mostrarMensaje('Debes aceptar los términos y condiciones para continuar', 'error');
           return false;
         }
         return true;
+        
+      default:
+        return true;
     }
-    return true;
   }
 
-  // Actualizar resumen
   function updateSummary() {
-    // Actualizar resumen - versión corregida
-    try {
-      console.log("Actualizando resumen, paso actual:", currentStep);
-      
-      // Siempre actualizar el resumen del carrito para el paso 2
-      fetch('/artesanoDigital/controllers/checkout.php?accion=obtener_carrito', {
-        method: 'GET',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Requested-With': 'XMLHttpRequest'
-        }
-      })
-      .then(res => res.json())
-      .catch(e => {
-        console.log("Error al parsear respuesta:", e);
-        return { exitoso: false, mensaje: "Error al obtener datos del carrito" };
-      })
-      .then(data => {
-        if (data && data.exitoso) {
-          // Actualizar el resumen en el paso 2
-          const summaryItemsStep2 = document.querySelector('#cart-summary-step2');
-          if (summaryItemsStep2) {
-            let html = '';
-            let total = 0;
-            
-            data.carrito.forEach(item => {
-              const subtotal = parseFloat(item.precio) * parseInt(item.cantidad);
-              total += subtotal;
-              html += `<div class="summary-item d-flex justify-content-between">
-                <span class="product-name">${item.nombre} x ${item.cantidad}</span>
-                <span class="product-price">B/. ${subtotal.toFixed(2)}</span>
-              </div>`;
-            });
-            
-            summaryItemsStep2.innerHTML = html;
-            
-            const totalElement = document.querySelector('#cart-summary-total-step2');
-            if (totalElement) {
-              totalElement.textContent = 'B/. ' + total.toFixed(2);
-            }
-          }
-        } else {
-          console.log("Error en la respuesta del servidor:", data);
-        }
-      })
-      .catch(error => {
-        console.error('Error al actualizar resumen:', error);
-      });
-    } catch (e) {
-      console.error("Error en updateSummary:", e);
-    }
+    console.log("Actualizando resumen, paso actual:", currentStep);
     
     // Si estamos en el paso de confirmación, actualizar todos los datos del resumen
-    if (currentStep === 4) {
+    if (currentStep === 3) {
       try {
+        // Actualizar información de envío
         const nombreElem = document.getElementById('summary-nombre');
         const telefonoElem = document.getElementById('summary-telefono');
         const direccionElem = document.getElementById('summary-direccion');
         const ciudadElem = document.getElementById('summary-ciudad');
-        const paymentMethodElem = document.getElementById('summary-payment-method');
         
         if (nombreElem) nombreElem.textContent = document.getElementById('nombre').value;
         if (telefonoElem) telefonoElem.textContent = document.getElementById('telefono').value;
         if (direccionElem) direccionElem.textContent = document.getElementById('direccion').value;
-        if (ciudadElem) ciudadElem.textContent = document.getElementById('ciudad').value;
+        if (ciudadElem) {
+          const ciudadSelect = document.getElementById('ciudad');
+          ciudadElem.textContent = ciudadSelect.options[ciudadSelect.selectedIndex].text;
+        }
         
+        // Actualizar información de pago
         const metodoPago = document.querySelector('input[name="metodo_pago"]:checked');
+        const paymentMethodElem = document.getElementById('summary-payment-method');
+        
         if (metodoPago && paymentMethodElem) {
           if (metodoPago.value === 'tarjeta') {
             const numeroTarjeta = document.getElementById('numero_tarjeta');
             if (numeroTarjeta && numeroTarjeta.value) {
-              paymentMethodElem.textContent = 'Tarjeta que termina en ' + 
-                numeroTarjeta.value.slice(-4);
+              const ultimos4 = numeroTarjeta.value.replace(/\s+/g, '').slice(-4);
+              paymentMethodElem.textContent = `Tarjeta que termina en ${ultimos4}`;
             } else {
               paymentMethodElem.textContent = 'Tarjeta de crédito/débito';
             }
           } else if (metodoPago.value === 'yappy') {
             const telefonoYappy = document.getElementById('telefono_yappy');
             if (telefonoYappy && telefonoYappy.value) {
-              paymentMethodElem.textContent = 'Yappy al número ' + telefonoYappy.value;
+              paymentMethodElem.textContent = `Yappy al número ${telefonoYappy.value}`;
             } else {
               paymentMethodElem.textContent = 'Yappy';
             }
           }
         }
+        
+        // No necesitamos actualizar los productos ni el total, ya que están renderizados por el servidor
+        // y siempre muestran los datos más actualizados
+        
       } catch (e) {
-        console.error("Error al actualizar resumen en paso 4:", e);
+        console.error("Error al actualizar resumen en paso 3:", e);
       }
     }
   }
-  
-  // Asegurar que el botón de completar compra envía el formulario
-  document.addEventListener('DOMContentLoaded', function() {
-    const btnCompletarCompra = document.getElementById('btn-completar-compra');
-    if (btnCompletarCompra) {
-      btnCompletarCompra.addEventListener('click', function(e) {
-        e.preventDefault();
-        const form = document.getElementById('checkout-form');
-        if (form) {
-          // Verificar que los términos están aceptados
-          const aceptoTerminos = document.getElementById('acepto-terminos');
-          if (aceptoTerminos && !aceptoTerminos.checked) {
-            mostrarMensaje('Debes aceptar los términos y condiciones para continuar', 'error');
-            return;
-          }
-          
-          // Enviar el formulario
-          form.submit();
-        }
-      });
-    }
-  });
-  
-  // Código para arreglar problemas de navegación
-  window.addEventListener('DOMContentLoaded', function() {
-    // Verificar y añadir mensajes de debug
-    console.log('DOM cargado completamente');
+
+  function mostrarMensaje(mensaje, tipo = 'info') {
+    console.log(`Mostrando mensaje (${tipo}): ${mensaje}`);
     
-    // Verificar que todos los elementos necesarios existen
-    const checkElements = [
-      { id: 'step-1', name: 'Paso 1 (Carrito)' },
-      { id: 'step-2', name: 'Paso 2 (Dirección)' },
-      { id: 'step-3', name: 'Paso 3 (Pago)' },
-      { id: 'step-4', name: 'Paso 4 (Confirmación)' },
-      { id: 'step-5', name: 'Paso 5 (Finalizado)' },
-      { id: 'btn-completar-compra', name: 'Botón Completar Compra' }
-    ];
-    
-    checkElements.forEach(elem => {
-      const element = document.getElementById(elem.id);
-      if (!element) {
-        console.warn(`Elemento no encontrado: ${elem.name} (ID: ${elem.id})`);
-      }
-    });
-    
-    // Asegurarse de que los botones de navegación funcionan
-    document.querySelectorAll('.next-step').forEach(button => {
-      button.addEventListener('click', function() {
-        console.log('Botón siguiente clickeado, paso actual:', currentStep);
-      });
-    });
-    
-    // Fix para problema de avance de paso
-    const fixStepButtons = function() {
-      document.querySelectorAll('.next-step').forEach(button => {
-        const originalClick = button.onclick;
-        button.onclick = null;
-        button.addEventListener('click', function(e) {
-          e.preventDefault();
-          console.log('Avanzando al siguiente paso desde:', currentStep);
-          if (typeof validateStep === 'function' && validateStep(currentStep)) {
-            currentStep++;
-            if (typeof updateSteps === 'function') updateSteps();
-            if (typeof updateSummary === 'function') updateSummary();
-          }
-        });
-      });
+    // Si hay un contenedor específico para mensajes
+    if (cartMessageContainer) {
+      const alertClass = tipo === 'error' ? 'alert-danger' : 
+                        tipo === 'success' ? 'alert-success' : 
+                        tipo === 'warning' ? 'alert-warning' : 'alert-info';
       
-      document.querySelectorAll('.prev-step').forEach(button => {
-        const originalClick = button.onclick;
-        button.onclick = null;
-        button.addEventListener('click', function(e) {
-          e.preventDefault();
-          console.log('Retrocediendo al paso anterior desde:', currentStep);
-          currentStep--;
-          if (typeof updateSteps === 'function') updateSteps();
-        });
-      });
-    };
-    
-    // Ejecutar después de un breve retraso para asegurarse de que todo está cargado
-    setTimeout(fixStepButtons, 500);
-  });
+      cartMessageContainer.innerHTML = `
+        <div class="alert ${alertClass} alert-dismissible fade show" role="alert">
+          ${mensaje}
+          <button type="button" class="close" data-dismiss="alert" aria-label="Close">
+            <span aria-hidden="true">&times;</span>
+          </button>
+        </div>
+      `;
+      
+      // Asegurar que el mensaje es visible
+      cartMessageContainer.scrollIntoView({ behavior: 'smooth' });
+      
+      // Auto-cerrar después de 5 segundos
+      setTimeout(() => {
+        const alert = cartMessageContainer.querySelector('.alert');
+        if (alert) {
+          alert.classList.remove('show');
+          setTimeout(() => {
+            cartMessageContainer.innerHTML = '';
+          }, 300);
+        }
+      }, 5000);
+    } else {
+      // Si no hay contenedor, usar alert nativo
+      alert(mensaje);
+    }
+  }
+});
 </script>
 
 <?php

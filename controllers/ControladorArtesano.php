@@ -173,20 +173,73 @@ class ControladorArtesano
     }
 
     /**
-     * Obtiene estadísticas del artesano
+     * Obtiene estadísticas del artesano desde la base de datos
      * @param int $idUsuario
      * @return array
      */
     private function obtenerEstadisticas(int $idUsuario): array 
     {
-        // Por ahora retornamos datos de prueba
-        return [
-            'productos_activos' => 5,
-            'ventas_totales' => 12,
-            'ingresos_totales' => 450.00,
-            'valoracion_promedio' => '4.5',
-            'pedidos_pendientes' => 3
+        // Inicializar estadísticas
+        $estadisticas = [
+            'productos_activos' => 0,
+            'ventas_totales' => 0,
+            'ingresos_totales' => 0.00,
+            'pedidos_pendientes' => 0
         ];
+        
+        try {
+            // Obtener ID de la tienda del artesano
+            require_once dirname(__FILE__) . '/../config/Database.php';
+            $db = \Config\Database::obtenerInstancia();
+            $conexion = $db->obtenerConexion();
+            
+            // 1. Obtener ID de la tienda
+            $stmt = $conexion->prepare("SELECT id_tienda FROM tiendas WHERE id_usuario = ?");
+            $stmt->execute([$idUsuario]);
+            $tienda = $stmt->fetch(\PDO::FETCH_ASSOC);
+            
+            if (!$tienda) {
+                return $estadisticas; // Artesano sin tienda
+            }
+            
+            $idTienda = $tienda['id_tienda'];
+            
+            // 2. Contar productos activos
+            $stmt = $conexion->prepare("SELECT COUNT(*) as total FROM productos WHERE id_tienda = ? AND activo = 1");
+            $stmt->execute([$idTienda]);
+            $resultado = $stmt->fetch(\PDO::FETCH_ASSOC);
+            $estadisticas['productos_activos'] = (int)($resultado['total'] ?? 0);
+            
+            // 3. Contar ventas totales (productos vendidos)
+            $stmt = $conexion->prepare("
+                SELECT COUNT(*) as total_ventas, SUM(pp.cantidad * pp.precio_unitario) as ingresos
+                FROM pedido_productos pp
+                JOIN pedidos p ON pp.id_pedido = p.id_pedido
+                JOIN productos prod ON pp.id_producto = prod.id_producto
+                WHERE prod.id_tienda = ? AND p.estado != 'cancelado'
+            ");
+            $stmt->execute([$idTienda]);
+            $resultado = $stmt->fetch(\PDO::FETCH_ASSOC);
+            $estadisticas['ventas_totales'] = (int)($resultado['total_ventas'] ?? 0);
+            $estadisticas['ingresos_totales'] = floatval($resultado['ingresos'] ?? 0);
+            
+            // 4. Contar pedidos pendientes
+            $stmt = $conexion->prepare("
+                SELECT COUNT(DISTINCT p.id_pedido) as pendientes
+                FROM pedidos p
+                JOIN pedido_productos pp ON p.id_pedido = pp.id_pedido
+                JOIN productos prod ON pp.id_producto = prod.id_producto
+                WHERE prod.id_tienda = ? AND p.estado = 'pendiente'
+            ");
+            $stmt->execute([$idTienda]);
+            $resultado = $stmt->fetch(\PDO::FETCH_ASSOC);
+            $estadisticas['pedidos_pendientes'] = (int)($resultado['pendientes'] ?? 0);
+            
+        } catch (\Exception $e) {
+            error_log("Error al obtener estadísticas: " . $e->getMessage());
+        }
+        
+        return $estadisticas;
     }
 
     /**

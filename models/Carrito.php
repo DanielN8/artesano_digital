@@ -244,15 +244,37 @@ class Carrito
     public function vaciarCarrito(int $idUsuario): bool 
     {
         try {
+            $this->conexion->beginTransaction();
+            
+            // Obtenemos el ID del carrito
             $idCarrito = $this->obtenerOCrearCarrito($idUsuario);
 
+            // Eliminamos todos los productos del carrito
             $sql = "DELETE FROM carrito_productos WHERE id_carrito = :id_carrito";
             $stmt = $this->conexion->prepare($sql);
+            $resultado = $stmt->execute(['id_carrito' => $idCarrito]);
             
-            return $stmt->execute(['id_carrito' => $idCarrito]);
+            if (!$resultado) {
+                throw new Exception("No se pudo vaciar el carrito con ID: $idCarrito");
+            }
+            
+            // Verificar que se hayan eliminado todos los productos
+            $sqlVerificar = "SELECT COUNT(*) FROM carrito_productos WHERE id_carrito = :id_carrito";
+            $stmtVerificar = $this->conexion->prepare($sqlVerificar);
+            $stmtVerificar->execute(['id_carrito' => $idCarrito]);
+            
+            if ($stmtVerificar->fetchColumn() > 0) {
+                throw new Exception("No se eliminaron todos los productos del carrito: $idCarrito");
+            }
+            
+            $this->conexion->commit();
+            return true;
 
         } catch (Exception $e) {
-            error_log("Error al vaciar carrito: " . $e->getMessage());
+            if ($this->conexion->inTransaction()) {
+                $this->conexion->rollBack();
+            }
+            error_log("Error al vaciar carrito para usuario $idUsuario: " . $e->getMessage());
             return false;
         }
     }
